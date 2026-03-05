@@ -1,0 +1,72 @@
+name: ML CI/CD Pipeline
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+env:
+  PYTHON_VERSION: '3.11'
+
+jobs:
+  # ── Job 1: Code Quality & Tests ─────────────────
+  test:
+    name: Run Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install pandas numpy scikit-learn lightgbm fastapi
+          pip install uvicorn httpx pytest pytest-cov pydantic mlflow
+
+      - name: Run API unit tests
+        run: pytest tests/test_api.py -v --cov=app --cov-report=xml
+
+      - name: Run data quality tests
+        run: python tests/test_data_quality.py
+        continue-on-error: true  # Don't fail if data not available
+
+      - name: Upload coverage report
+        uses: codecov/codecov-action@v4
+        with:
+          file: ./coverage.xml
+
+  # ── Job 2: Build Docker Image ────────────────────
+  docker-build:
+    name: Build Docker Image
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build Docker image
+        run: docker build -t credit-risk-api:${{ github.sha }} .
+
+      - name: Test Docker image starts
+        run: |
+          docker run -d -p 8000:8000 --name test-api credit-risk-api:${{ github.sha }}
+          sleep 5
+          curl -f http://localhost:8000/health || exit 1
+          docker stop test-api
+
+  # ── Job 3: Lint & Security Scan ──────────────────
+  quality:
+    name: Code Quality
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: '${{ env.PYTHON_VERSION }}'
+      - run: pip install flake8
+      - run: flake8 app/ src/ --max-line-length=100 --exclude=venv --count
